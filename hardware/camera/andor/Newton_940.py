@@ -112,14 +112,27 @@ class Main(Base, SpectroscopyCameraInterface):
     """
     _dll_location = ConfigOption('dll_location', missing='error')
 
+    _default_read_mode = ConfigOption('default_read_mode', ReadMode.FVB)
+    _available_read_modes = ConfigOption('available_read_modes', list(ReadMode.__members__))
+
+    _internal_gains = ConfigOption('internal_gains', [1, 2, 4]) # List of internal gains of the camera
+
+    _readout_speeds = ConfigOption('readout_speeds', [50000, 1000000, 3000000]) # List of readout speeds of the camera
+
+    _has_shutter = ConfigOption('has_shutter', True) # If the camera has cooler controller
+    _close_shutter_on_deactivate = ConfigOption('close_shutter_on_deactivate', False)
+    _shutter_TTL = ConfigOption('shutter_TTL', 1)  # Select how shutter is triggered with input signal ("high" or "low")
+    _shutter_switching_time = ConfigOption('shutter_switching_time', 100e-3)  # In "Auto" mode the shutter will "open"
+    # and "close" with a period given by the "shutter_switching_time"
+
+    _has_cooler = ConfigOption('has_cooler', True) # If the camera has cooler controller
     _start_cooler_on_activate = ConfigOption('start_cooler_on_activate', True)
     _default_temperature = ConfigOption('default_temperature', 260)
-    _default_trigger_mode = ConfigOption('default_trigger_mode', 'INTERNAL')
-    _shutter_TTL = ConfigOption('shutter_TTL', 1)  # todo: explain what this is for the user
-    _shutter_switching_time = ConfigOption('shutter_switching_time', 100e-3)  # todo: explain what this is for the user
+    _min_temperature = ConfigOption('min_temperature', 188.15) # In K
+    _max_temperature = ConfigOption('max_temperature', 263.15) # In K
 
-    _min_temperature = -85  # todo: why ? In this module internally, we can work with degree celsius, as andor users will be used to this. Still, this look rather arbitrary
-    _max_temperature = -10  # todo: why ? same
+    _default_trigger_mode = ConfigOption('default_trigger_mode', TriggerMode.INTERNAL)
+    _available_trigger_modes = ConfigOption('available_trigger_modes', list(TriggerMode.__members__))
 
     # Declarations of attributes to make Pycharm happy
     def __init__(self):
@@ -151,16 +164,20 @@ class Main(Base, SpectroscopyCameraInterface):
 
         self._constraints = self._build_constraints()
 
-        if self._constraints.has_cooler and self._start_cooler_on_activate:
+        if self._has_cooler and self._start_cooler_on_activate:
             self.set_cooler_on(True)
 
-        self.set_read_mode(ReadMode.FVB)  # todo: what if not ?
+        self.set_read_mode(self._default_read_mode)
         self.set_trigger_mode(self._default_trigger_mode)
         self.set_temperature_setpoint(self._default_temperature)
 
         self._set_acquisition_mode(AcquisitionMode.SINGLE_SCAN)
         self._active_tracks = []
         self._image_advanced_parameters = None
+
+        if not all([trigger_mode in list(TriggerMode.__members__) for trigger_mode in self._available_trigger_modes]):
+            self.log.warning("Camera config option 'available trigger modes' set in the config file is not matching"
+                             " with the available keys of the TriggerMode enum dict. ")
 
     def on_deactivate(self):
         """ De-initialisation performed during deactivation of the module. """
@@ -199,12 +216,12 @@ class Main(Base, SpectroscopyCameraInterface):
         constraints.name = self._get_name()
         constraints.width, constraints.width = self._get_image_size()
         constraints.pixel_size_width, constraints.pixel_size_width = self._get_pixel_size()
-        constraints.internal_gains = [1, 2, 4]  # # todo : from hardware
-        constraints.readout_speeds = [50000, 1000000, 3000000]  # todo : read from hardware
-        constraints.has_cooler = True  # todo : from hardware ?
-        constraints.trigger_modes = list(TriggerMode.__members__)  # todo : from hardware if only some are available ?
-        constraints.has_shutter = True  # todo : from hardware ?
-        constraints.read_modes = [ReadMode.FVB]
+        constraints.internal_gains = self._internal_gains
+        constraints.readout_speeds = self._readout_speeds
+        constraints.has_cooler = self._has_cooler
+        constraints.trigger_modes = self._available_trigger_modes
+        constraints.has_shutter = self._has_shutter
+        constraints.read_modes = self._available_read_modes
         if constraints.height > 1:
             constraints.read_modes.extend([ReadMode.MULTIPLE_TRACKS, ReadMode.IMAGE, ReadMode.IMAGE_ADVANCED])
         return constraints
@@ -300,7 +317,7 @@ class Main(Base, SpectroscopyCameraInterface):
          @param (ReadMode) value: read mode to set
          """
 
-        if value not in self.get_constraints().read_modes:
+        if value not in self._default_read_mode:
             self.log.error('read_mode not supported')
             return
 
@@ -324,15 +341,15 @@ class Main(Base, SpectroscopyCameraInterface):
 
         @return (float): the readout_speed (Horizontal shift) in Hz
         """
-        return self._readout_speed  # todo: not in dll ?
+        return self._readout_speed
 
     def set_readout_speed(self, value):
         """ Set the readout speed (in Hz)
 
         @param (float) value: horizontal readout speed in Hz
         """
-        if value in self.get_constraints().readout_speeds:
-            readout_speed_index = self.get_constraints().readout_speeds.index(value)
+        if value in self._readout_speeds:
+            readout_speed_index = self._readout_speeds[value]
             self._check(self._dll.SetHSSpeed(0, readout_speed_index))
             self._readout_speed = value
         else:
@@ -468,10 +485,10 @@ class Main(Base, SpectroscopyCameraInterface):
 
         @param (float) value: New gain, value should be one in the constraints internal_gains list.
         """
-        if value not in self.get_constraints().internal_gains:
+        if value not in self._internal_gains:
             self.log.error('gain value {} is not available.'.format(value))
             return
-        gain_index = self.get_constraints().internal_gains.index(value)
+        gain_index = self.self._internal_gains[value]
         self._check(self._dll.SetPreAmpGain(gain_index))
 
     ##############################################################################
@@ -489,7 +506,7 @@ class Main(Base, SpectroscopyCameraInterface):
 
         @param (str) value: trigger mode (must be compared to a dict)
         """
-        if value not in self.get_constraints().trigger_modes:
+        if value not in self._available_trigger_modes:
             self.log.error('Trigger mode {} is not declared by hardware.'.format(value))
             return
         n_mode = TriggerMode[value].value
@@ -505,7 +522,7 @@ class Main(Base, SpectroscopyCameraInterface):
 
         @return (ShutterState): The current shutter state
         """
-        if not self.get_constraints().has_shutter:
+        if not self._has_shutter:
             self.log.error('Can not get state of the shutter, camera does not have a shutter')
         return self._shutter_status  # todo from hardware
 
@@ -514,7 +531,7 @@ class Main(Base, SpectroscopyCameraInterface):
 
         @param (ShutterState) value: the shutter state to set
         """
-        if not self.get_constraints().has_shutter:
+        if not self._has_shutter:
             self.log.error('Can not set state of the shutter, camera does not have a shutter')
 
         conversion_dict = {ShutterState.AUTO: 0, ShutterState.OPEN: 1, ShutterState.CLOSED: 2}
@@ -623,20 +640,24 @@ class Main(Base, SpectroscopyCameraInterface):
 
         @return (dict): dictionary with camera current configuration.
         """
-        config = {  #todo use getters for most of them
+        image_advanced = self.get_image_advanced_parameters()
+        hbin, vbin = image_advanced.horizontal_binning, image_advanced.vertical_binning
+        hstart, hend = image_advanced.horizontal_start, image_advanced.horizontal_end
+        vstart, vend = image_advanced.vertical_start, image_advanced.vertical_end
+        config = {
             'camera ID..................................': self._get_name(),
             'sensor size (pixels).......................': self._get_image_size(),
-            'pixel size (m)............................': self._get_pixel_size(),
-            'acquisition mode...........................': self._acquisition_mode,
-            'read mode..................................': self._read_mode,
-            'readout speed (Hz).........................': self._readout_speed,
-            'gain (x)...................................': self._preamp_gain,
-            'trigger_mode...............................': self._trigger_mode,
-            'exposure_time..............................': self._exposure,
-            'ROI geometry (readmode = IMAGE)............': self._ROI,
-            'ROI binning (readmode = IMAGE).............': self._binning,
-            'tracks definition (readmode = RANDOM TRACK)': self._active_tracks,
-            'temperature (K)............................': self._temperature,
-            'shutter_status.............................': self._shutter_status,
+            'pixel size (m).............................': self._get_pixel_size(),
+            'acquisition mode...........................': self._get_acquisition_mode(),
+            'read mode..................................': self.get_read_mode(),
+            'readout speed (Hz).........................': self.get_readout_speed(),
+            'gain (x)...................................': self.get_gain(),
+            'trigger_mode...............................': self.get_trigger_mode(),
+            'exposure_time..............................': self.get_exposure_time(),
+            'ROI geometry (readmode = IMAGE)............': (hstart, hend, vstart, vend),
+            'ROI binning (readmode = IMAGE).............': (hbin, vbin),
+            'tracks definition (readmode = RANDOM TRACK)': self.get_active_tracks(),
+            'temperature setpoint (K)...................': self.get_temperature_setpoint(),
+            'shutter_status.............................': self.get_shutter_state(),
         }
         return config
