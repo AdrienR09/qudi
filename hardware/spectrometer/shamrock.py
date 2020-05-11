@@ -25,8 +25,8 @@ import ctypes as ct
 from core.module import Base
 from core.configoption import ConfigOption
 
-from interface.spectrometer_complete_interface import SpectrometerInterface
-from interface.spectrometer_complete_interface import Grating, PortType, Port, Constraints
+from interface.grating_spectrometer_interface import GratingSpectrometerInterface
+from interface.grating_spectrometer_interface import Grating, PortType, Port, Constraints
 
 ERROR_CODE = {
     20201: "SHAMROCK_COMMUNICATION_ERROR",
@@ -61,7 +61,8 @@ class Shamrock(Base, SpectrometerInterface):
     _slit_range = ConfigOption('slit_range', [10e-6, 2500e-6]) # Define the slit width limits for slit width controller
 
     # Declarations of attributes to make Pycharm happy
-    def __init__(self):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self._constraints = None
         self._dll = None
         self._shutter_status = None
@@ -76,6 +77,7 @@ class Shamrock(Base, SpectrometerInterface):
             self._dll = ct.cdll.LoadLibrary(self._dll_location)
         except OSError:
             self.log.error('Error during dll loading of the Shamrock spectrometer, check the dll path.')
+            return
 
         status_code = self._dll.ShamrockInitialize()
         if status_code != OK_CODE:
@@ -126,7 +128,7 @@ class Shamrock(Base, SpectrometerInterface):
         input_port_front.is_motorized = self._auto_slit_is_present('input', 'front')
         constraints.ports.append(input_port_front)
 
-        if self.flipper_mirror_is_present('input'):
+        if self._flipper_mirror_is_present('input'):
             input_port_side = Port(PortType.INPUT_SIDE)
             input_port_side.is_motorized = self._auto_slit_is_present('input', 'side')
             constraints.ports.append(input_port_side)
@@ -135,7 +137,7 @@ class Shamrock(Base, SpectrometerInterface):
         output_port_front.is_motorized = self._auto_slit_is_present('output', 'front')
         constraints.ports.append(output_port_front)
 
-        if self.flipper_mirror_is_present('output'):
+        if self._flipper_mirror_is_present('output'):
             output_port_side = Port(PortType.OUTPUT_SIDE)
             output_port_side.is_motorized = self._auto_slit_is_present('output', 'side')
             constraints.ports.append(output_port_side)
@@ -166,6 +168,8 @@ class Shamrock(Base, SpectrometerInterface):
         """ Returns all the fixed parameters of the hardware which can be used by the logic.
 
         @return (Constraints): An object of class Constraints containing all fixed parameters of the hardware
+
+        Tested
         """
         return self._constraints
 
@@ -173,37 +177,45 @@ class Shamrock(Base, SpectrometerInterface):
         """ Returns the current grating index
 
         @return (int): Current grating index
+
+        Tested
         """
         grating = ct.c_int()
-        self._check(self.dll.ShamrockGetGrating(self.device_id, ct.byref(grating)))
+        self._check(self._dll.ShamrockGetGrating(self._device_id, ct.byref(grating)))
         return grating.value-1  # DLL starts at 1
 
     def set_grating_index(self, value):
         """ Sets the grating by index
 
         @param (int) value: grating index
+
+        Tested
         """
-        self._check(self.dll.ShamrockSetGrating(self.device_id, value+1))  # DLL starts at 1
+        self._check(self._dll.ShamrockSetGrating(self._device_id, value+1))  # DLL starts at 1
 
     def get_wavelength(self):
         """ Returns the current central wavelength in meter
 
         @return (float): current central wavelength (meter)
+
+        Tested - si
         """
         wavelength = ct.c_float()
-        self._check(self.dll.ShamrockGetWavelength(self.device_id, ct.byref(wavelength)))
+        self._check(self._dll.ShamrockGetWavelength(self._device_id, ct.byref(wavelength)))
         return wavelength.value * 1e-9
 
     def set_wavelength(self, value):
         """ Sets the new central wavelength in meter
 
         @params (float) value: The new central wavelength (meter)
+
+        Tested - si - go to 0 order
         """
         grating_index = self.get_grating_index()
         maxi = self.get_constraints().gratings[grating_index].wavelength_max # TODO : I think you meant grating index
         if 0 <= value <= maxi:
-            self.dll.ShamrockSetWavelength.argtypes = [ct.c_int32, ct.c_float]
-            self._check(self.dll.ShamrockSetWavelength(self.device_id, value * 1e9))
+            self._dll.ShamrockSetWavelength.argtypes = [ct.c_int32, ct.c_float]
+            self._check(self._dll.ShamrockSetWavelength(self._device_id, value * 1e9))
         else:
             self.log.error('The wavelength {} is not in the range {}, {}'.format(value*1e9, 0, maxi*1e9))
 
@@ -211,35 +223,61 @@ class Shamrock(Base, SpectrometerInterface):
         """ Returns the current input port
 
         @return (PortType): current port side
+
+        Tested
         """
         input_port = ct.c_int()
-        self.dll.ShamrockGetFlipperMirror(self.device_id, INPUT_CODE, ct.byref(input_port))
+        self._dll.ShamrockGetFlipperMirror(self._device_id, INPUT_CODE, ct.byref(input_port))
         return PortType.INPUT_FRONT if input_port.value == FRONT_CODE else PortType.INPUT_SIDE
 
     def set_input_port(self, value):
         """ Set the current input port
 
         @param (PortType) value: The port side to set
+
+        Tested
         """
+        if not value in PortType:
+            self.log.error('Function parameter is not a PortType value ')
+            return
+        if value in [PortType.OUTPUT_FRONT, PortType.OUTPUT_SIDE]:
+            self.log.error('Function parameter must be an INPUT value of PortType ')
+            return
+        if not self._flipper_mirror_is_present('input'):
+            self.log.debug('No flipper mirror is present on the input port : PortType.INPUT_SIDE value is forbidden ')
+            return
         code = FRONT_CODE if value == PortType.INPUT_FRONT else SIDE_CODE
-        self._check(self.dll.ShamrockSetFlipperMirror(self.device_id, INPUT_CODE, code))
+        self._check(self._dll.ShamrockSetFlipperMirror(self._device_id, INPUT_CODE, code))
 
     def get_output_port(self):
         """ Returns the current output port
 
         @return (PortType): current port side
+
+        Tested
         """
         output_port = ct.c_int()
-        self.dll.ShamrockGetFlipperMirror(self.device_id, OUTPUT_CODE, ct.byref(output_port))
+        self._dll.ShamrockGetFlipperMirror(self._device_id, OUTPUT_CODE, ct.byref(output_port))
         return PortType.OUTPUT_FRONT if output_port.value == FRONT_CODE else PortType.OUTPUT_SIDE
 
     def set_output_port(self, value):
         """ Set the current output port
 
         @param (PortType) value: The port side to set
+
+        Tested
         """
+        if not value in PortType:
+            self.log.error('Function parameter is not a PortType value ')
+            return
+        if value in [PortType.INPUT_FRONT, PortType.INPUT_SIDE]:
+            self.log.error('Function parameter must be an OUTPUT value of PortType ')
+            return
+        if not self._flipper_mirror_is_present('output'):
+            self.log.debug('No flipper mirror is present on the input port : PortType.OUTPUT_SIDE value is forbidden ')
+            return
         code = FRONT_CODE if value == PortType.OUTPUT_FRONT else SIDE_CODE
-        self._check(self.dll.ShamrockSetFlipperMirror(self.device_id, OUTPUT_CODE, code))
+        self._check(self._dll.ShamrockSetFlipperMirror(self._device_id, OUTPUT_CODE, code))
 
     def get_slit_width(self, port_type):
         """ Getter for the current slit width in meter on a given port
@@ -248,9 +286,19 @@ class Shamrock(Base, SpectrometerInterface):
 
         @return (float): input slit width (in meter)
         """
+        if not port_type in PortType:
+            self.log.error('Function parameter is not a PortType value ')
+            return
+        if not self._flipper_mirror_is_present('output') and port_type == PortType.OUTPUT_FRONT:
+            self.log.debug('No flipper mirror is present on the input port : PortType.OUTPUT_SIDE value is forbidden ')
+            return
+        # TODO : Problem with 'communication error' : no way to get or set the slit width on the output port !!!
+        if not self._flipper_mirror_is_present('input') and port_type == PortType.INPUT_FRONT:
+            self.log.debug('No flipper mirror is present on the input port : PortType.OUTPUT_SIDE value is forbidden ')
+            return
         index = self._get_slit_index(port_type)
         slit_width = ct.c_float()
-        self._check(self.dll.ShamrockGetAutoSlitWidth(self.device_id, index, ct.byref(slit_width)))
+        self._check(self._dll.ShamrockGetAutoSlitWidth(self._device_id, index, ct.byref(slit_width)))
         return slit_width.value*1e-6
 
     def set_slit_width(self, port_type, value):
@@ -259,11 +307,15 @@ class Shamrock(Base, SpectrometerInterface):
         @param (PortType) port_type: The port to set
         @param (float) value: input slit width (in meter)
         """
+        if not port_type in PortType:
+            self.log.error('Function parameter is not a PortType value ')
+            return
+
         if self.SLIT_MIN_WIDTH <= value <= self.SLIT_MAX_WIDTH:
 
             index = self._get_slit_index(port_type)
-            self.dll.ShamrockSetAutoSlitWidth.argtypes = [ct.c_int32, ct.c_int32, ct.c_float]
-            self._check(self.dll.ShamrockSetAutoSlitWidth(self.device_id, index, value*1e6))
+            self._dll.ShamrockSetAutoSlitWidth.argtypes = [ct.c_int32, ct.c_int32, ct.c_float]
+            self._check(self._dll.ShamrockSetAutoSlitWidth(self._device_id, index, value*1e6))
         else:
             self.log.error('Slit with ({} um) out of range.'.format(value*1e6))
 
@@ -276,7 +328,7 @@ class Shamrock(Base, SpectrometerInterface):
         @return (int): the number of devices detected by the DLL
         """
         number_of_devices = ct.c_int()
-        self._check(self.dll.ShamrockGetNumberDevices(ct.byref(number_of_devices)))
+        self._check(self._dll.ShamrockGetNumberDevices(ct.byref(number_of_devices)))
         return number_of_devices.value
 
     def _get_connected_devices(self):
@@ -322,7 +374,7 @@ class Shamrock(Base, SpectrometerInterface):
         The unit of the given parameters are SI, so meter for the focal_length and radian for the other two
         """
         focal_length, angular_deviation, focal_tilt = ct.c_float(), ct.c_float(), ct.c_float()
-        self._check(self.dll.ShamrockEepromGetOpticalParams(self.device_id, ct.byref(focal_length),
+        self._check(self._dll.ShamrockEepromGetOpticalParams(self._device_id, ct.byref(focal_length),
                                                             ct.byref(angular_deviation), ct.byref(focal_tilt)))
         return {'focal_length': focal_length.value,
                 'angular_deviation': angular_deviation.value*np.pi/180,
@@ -334,7 +386,7 @@ class Shamrock(Base, SpectrometerInterface):
         @return (int): The number of gratings
         """
         number_of_gratings = ct.c_int()
-        self._check(self.dll.ShamrockGetNumberGratings(self.device_id, ct.byref(number_of_gratings)))
+        self._check(self._dll.ShamrockGetNumberGratings(self._device_id, ct.byref(number_of_gratings)))
         return number_of_gratings.value
 
     def _get_grating_info(self, grating):
@@ -354,7 +406,7 @@ class Shamrock(Base, SpectrometerInterface):
         blaze = ct.create_string_buffer(32)
         home, offset = ct.c_int(), ct.c_int()
 
-        self._check(self.dll.ShamrockGetGratingInfo(self.device_id, grating+1,
+        self._check(self._dll.ShamrockGetGratingInfo(self._device_id, grating+1,
                                                     ct.byref(line), ct.byref(blaze), ct.byref(home), ct.byref(offset)))
         return {'ruling': line.value * 1e3,  # DLL use l/mm
                 'blaze': blaze.value,  # todo: check unit directly in nm ?
@@ -370,7 +422,7 @@ class Shamrock(Base, SpectrometerInterface):
         """
         wavelength_min, wavelength_max = ct.c_float(), ct.c_float()
 
-        self._check(self.dll.ShamrockGetWavelengthLimits(self.device_id, grating+1,
+        self._check(self._dll.ShamrockGetWavelengthLimits(self._device_id, grating+1,
                                                          ct.byref(wavelength_min), ct.byref(wavelength_max)))
         return wavelength_min.value*1e-9, wavelength_max.value*1e-9  # DLL uses nanometer
 
@@ -384,7 +436,7 @@ class Shamrock(Base, SpectrometerInterface):
         conversion_dict = {'input': INPUT_CODE, 'output': OUTPUT_CODE}
         code = conversion_dict[flipper]
         present = ct.c_int()
-        self._check(self.dll.ShamrockFlipperMirrorIsPresent(self.device_id, code, ct.byref(present)))
+        self._check(self._dll.ShamrockFlipperMirrorIsPresent(self._device_id, code, ct.byref(present)))
         return present.value
 
     def _auto_slit_is_present(self, flipper, port):
@@ -401,7 +453,7 @@ class Shamrock(Base, SpectrometerInterface):
                            ('output', 'side'): 3}
         slit_index = conversion_dict[(flipper, port)]
         present = ct.c_int()
-        self._check(self.dll.ShamrockAutoSlitIsPresent(self.device_id, slit_index, ct.byref(present)))
+        self._check(self._dll.ShamrockAutoSlitIsPresent(self._device_id, slit_index, ct.byref(present)))
         return present.value
 
     ##############################################################################
@@ -417,12 +469,12 @@ class Shamrock(Base, SpectrometerInterface):
         Shamrock DLL can give a estimate of the calibration if the required parameters are given.
         This feature is not used by Qudi but is useful to check everything is ok.
         """
-        self._check(self.dll.ShamrockSetNumberPixels(self.device_id, value))
+        self._check(self._dll.ShamrockSetNumberPixels(self._device_id, value))
 
     def _get_number_of_pixels(self):
         """ Returns the number of pixel previously set with self._set_number_of_pixels """
         pixel_number = ct.c_int()
-        self._check(self.dll.ShamrockGetNumberPixels(self.device_id, ct.byref(pixel_number)))
+        self._check(self._dll.ShamrockGetNumberPixels(self._device_id, ct.byref(pixel_number)))
         return pixel_number.value
 
     def _set_pixel_width(self, value):
@@ -436,13 +488,13 @@ class Shamrock(Base, SpectrometerInterface):
         if not (1e-6 <= value <= 100e-6):
             self.log.warning('The pixel width you ask ({} um) raises a warning.'.format(value*1e6))
 
-        self.dll.ShamrockSetPixelWidth.argtypes = [ct.c_int32, ct.c_float]
-        self._check(self.dll.ShamrockSetPixelWidth(self.device_id, value*1e6))
+        self._dll.ShamrockSetPixelWidth.argtypes = [ct.c_int32, ct.c_float]
+        self._check(self._dll.ShamrockSetPixelWidth(self._device_id, value*1e6))
 
     def _get_pixel_width(self):
         """ Returns the pixel width previously set with self._set_pixel_width """
         pixel_width = ct.c_float()
-        self._check(self.dll.ShamrockGetPixelWidth(self.device_id, ct.byref(pixel_width)))
+        self._check(self._dll.ShamrockGetPixelWidth(self._device_id, ct.byref(pixel_width)))
         return pixel_width.value*1e-6
 
     def _set_detector_offset(self, value):
@@ -453,12 +505,12 @@ class Shamrock(Base, SpectrometerInterface):
         Shamrock DLL can give a estimate of the calibration if the required parameters are given.
         This feature is not used by Qudi but is useful to check everything is ok.
         """
-        self._check(self.dll.ShamrockSetDetectorOffset(self.device_id, int(value)))
+        self._check(self._dll.ShamrockSetDetectorOffset(self._device_id, int(value)))
 
     def _get_detector_offset(self):
         """ Returns the detector offset previously set with self._set_detector_offset """
         offset = ct.c_int()
-        self._check(self.dll.ShamrockGetDetectorOffset(self.device_id, ct.byref(offset)))
+        self._check(self._dll.ShamrockGetDetectorOffset(self._device_id, ct.byref(offset)))
         return offset.value
 
     def _get_calibration(self):
@@ -471,8 +523,8 @@ class Shamrock(Base, SpectrometerInterface):
         """
         number_pixels = self._get_number_of_pixels()
         wl_array = np.ones((number_pixels,), dtype=np.float32)
-        self.dll.ShamrockGetCalibration.argtypes = [ct.c_int32, ct.c_void_p, ct.c_int32]
-        self._check(self.dll.ShamrockGetCalibration(self.device_id, wl_array.ctypes.data, number_pixels))
+        self._dll.ShamrockGetCalibration.argtypes = [ct.c_int32, ct.c_void_p, ct.c_int32]
+        self._check(self._dll.ShamrockGetCalibration(self._device_id, wl_array.ctypes.data, number_pixels))
         return wl_array*1e-9  # DLL uses nanometer
 
     ##############################################################################
@@ -486,7 +538,7 @@ class Shamrock(Base, SpectrometerInterface):
         #todo: what does this function mean ???
         """
         present = ct.c_int()
-        self._check(self.dll.ShamrockGratingIsPresent(self.device_id, ct.byref(present)))
+        self._check(self._dll.ShamrockGratingIsPresent(self._device_id, ct.byref(present)))
         return present.value
 
     def _get_grating_offset(self, grating):
@@ -497,7 +549,7 @@ class Shamrock(Base, SpectrometerInterface):
         @return (int): grating offset (step)
         """
         grating_offset = ct.c_int()
-        self._check(self.dll.ShamrockGetGratingOffset(self.device_id, grating+1, ct.byref(grating_offset)))
+        self._check(self._dll.ShamrockGetGratingOffset(self._device_id, grating+1, ct.byref(grating_offset)))
         return grating_offset.value
 
     def _set_grating_offset(self, grating, value):
@@ -506,4 +558,4 @@ class Shamrock(Base, SpectrometerInterface):
         @param (int) grating : grating index
         @param (int) value: The offset to set
         """
-        self._check(self.dll.ShamrockSetGratingOffset(self.device_id, grating+1, value))
+        self._check(self._dll.ShamrockSetGratingOffset(self._device_id, grating+1, value))
