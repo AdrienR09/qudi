@@ -75,18 +75,86 @@ class DataAnalysisLogic(GenericLogic):
         self._axis_range = axis_range
         self._axis_name = axis_name
 
-    def affine_plane_slicing(self, normal_vector, offset_point):
-        """
+    def planar_slicer(self, normal_vector, offset_vector):
+        """This function slice a data cube (with 3 dimensions) with an affine plane with parameters its normal vector
+        define in 3D space (x, y, z) and an offset value corresponding of the z value at x=0 and y=0. This slicing
+        is not periodic, if z value in the plane become negative the values are removed. A 2D data array corresponding
+        to the slicing is returned.
 
+                Z axis    Y axis
+                *  ......*...........
+        offset--*.......*...........
+        value   *  ....*...........
+                *    .*...........
+                *    * ..........
+                *   *    .......
+                *  *       ....
+                * *          .
+                * * * * * * * * * * * * * * * * * * X axis
         """
         data_shape = self._data.shape
         v1, v2, v3 = normal_vector
-        x_pos = np.arange(data_shape[0])
-        y_pos = np.arange(data_shape[1])
-        X_pos, Y_pos = np.meshgrid(x_pos, y_pos)
-        affine_plane = -v1/v3*X_pos -v2/v3*Y_pos + offset_point
-        affine_plane = affine_plane.T
-        sliced_data = np.array([self._data[i, j, int(affine_plane[i, j])] for i in x_pos for j in y_pos
-                                if i>0 and j>0 and data_shape[2]>affine_plane[i, j]>0])
+        x0, y0, z0 = offset_vector
+        if v3 == 0:
+            x_pos = np.arange(data_shape[0]) - x0
+            y_pos = -v1 / v2 * x_pos + y0
+            sliced_data = np.array(
+                [self._data[i, int(y_pos[i]), :] for i in x_pos if data_shape[1] > y_pos[i] >= 0])
+            sliced_data = np.transpose(sliced_data, (1, 0))
+        else:
+            x_pos = np.arange(data_shape[0]) - x0
+            y_pos = np.arange(data_shape[1]) - y0
+            X_pos, Y_pos = np.meshgrid(x_pos, y_pos)
+            Z_pos = -v1 / v3 * X_pos - v2 / v3 * Y_pos + z0
+            Z_pos = Z_pos.T
+            sliced_data = np.array(
+                [[self._data[i, j, int(Z_pos[i, j])] for i in x_pos if data_shape[2] > Z_pos[i, j] >= 0
+                  ] for j in y_pos])
         return sliced_data
 
+    def area_slicer(self, width, normal_vector, offset_vector):
+        data_shape = self._data.shape
+        v1, v2, v3 = normal_vector
+        x0, y0, z0 = offset_vector
+        if v3 == 0:
+            x_pos = np.arange(data_shape[0]) - x0
+            y_min = -v1 / v2 * x_pos + y0 - width/2
+            y_max = -v1 / v2 * x_pos + y0 + width/2
+            sliced_data = np.array(
+                [[self._data[i, j, :] for j in range(int(y_min[i]), int(y_max[i])) if data_shape[1] > j >= 0]
+                 for i in x_pos])
+            sliced_data = np.transpose(sliced_data, (2, 0, 1))
+        else:
+            x_pos = np.arange(data_shape[0]) - x0
+            y_pos = np.arange(data_shape[1]) - y0
+            X_pos, Y_pos = np.meshgrid(x_pos, y_pos)
+            Z_min = -v1 / v3 * X_pos - v2 / v3 * Y_pos + z0 - width/2
+            Z_max = -v1 / v3 * X_pos - v2 / v3 * Y_pos + z0 + width/2
+            sliced_data = np.array(
+                [[[self._data[i, j, k] for k in range(int(Z_min[i, j]),int(Z_max[i, j])) if data_shape[2] > k >= 0]
+                  for i in x_pos ] for j in y_pos])
+            sliced_data = np.transpose(sliced_data, (2, 0, 1))
+        return sliced_data
+
+def area_slicer(data, width, normal_vector, offset_vector):
+    data_shape = data.shape
+    v1, v2, v3 = normal_vector
+    x0, y0, z0 = offset_vector
+    if v3 == 0:
+        x_pos = np.arange(data_shape[0]) - x0
+        y_min = -v1 / v2 * x_pos + y0 + width/2
+        y_max = -v1 / v2 * x_pos + y0 - width/2
+        sliced_data = np.array(
+            [[data[i, j, :] for j in range(int(y_min[i]), int(y_max[i])) if data_shape[1] > j >= 0]
+             for i in x_pos])
+    else:
+        x_pos = np.arange(data_shape[0]) - x0
+        y_pos = np.arange(data_shape[1]) - y0
+        X_pos, Y_pos = np.meshgrid(x_pos, y_pos)
+        Z_min = -v1 / v3 * X_pos - v2 / v3 * Y_pos + z0 - width/2
+        Z_max = -v1 / v3 * X_pos - v2 / v3 * Y_pos + z0 + width/2
+        sliced_data = np.array(
+            [[[data[i, j, k] for k in range(int(Z_min[i, j]),int(Z_max[i, j])) if data_shape[2] > k >= 0]
+              for i in x_pos ] for j in y_pos])
+        sliced_data = np.transpose(sliced_data, (2, 0, 1))
+    return sliced_data
